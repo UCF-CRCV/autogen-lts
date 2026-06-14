@@ -2,8 +2,6 @@ import asyncio
 import os
 import json
 import time
-import re
-import string
 import yaml
 import warnings
 from datetime import datetime
@@ -13,88 +11,13 @@ from autogen_ext.agents.magentic_one import MagenticOneCoderAgent
 from autogen_agentchat.teams import MagenticOneGroupChat
 from autogen_agentchat.ui import Console
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
-from autogen_agentchat.conditions import TextMentionTermination
 from autogen_core.models import ChatCompletionClient
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_ext.agents.file_surfer import FileSurfer
 from autogen_agentchat.agents import CodeExecutorAgent
-from autogen_agentchat.messages import TextMessage
 
 # Suppress warnings about the requests.Session() not being closed
 warnings.filterwarnings(action="ignore", message="unclosed", category=ResourceWarning)
-
-
-def _gaia_question_scorer(model_answer: str, ground_truth: str) -> bool:
-    """GAIA-style answer normalization and equality check."""
-
-    def normalize_number_str(number_str: str) -> float:
-        # Replace common units and commas to allow conversion to float
-        for char in ["$", "%", ","]:
-            number_str = number_str.replace(char, "")
-        try:
-            return float(number_str)
-        except ValueError:
-            # String cannot be normalized to a number
-            return float("inf")
-
-    def split_string(s: str, char_list: list[str] = [",", ";"]) -> list[str]:
-        pattern = f"[{''.join(char_list)}]"
-        return re.split(pattern, s)
-
-    def normalize_str(input_str: str, remove_punct: bool = True) -> str:
-        """
-        Normalize a string by:
-        - Removing all white spaces
-        - Optionally removing punctuation
-        - Converting to lowercase
-        """
-        # Remove all white spaces
-        no_spaces = re.sub(r"\s", "", input_str)
-
-        # Remove punctuation, if specified.
-        if remove_punct:
-            translator = str.maketrans("", "", string.punctuation)
-            return no_spaces.lower().translate(translator)
-        else:
-            return no_spaces.lower()
-
-    def is_float(element: Any) -> bool:
-        try:
-            float(element)
-            return True
-        except ValueError:
-            return False
-
-    # If ground truth is a number
-    if is_float(ground_truth):
-        normalized_answer = normalize_number_str(model_answer)
-        return normalized_answer == float(ground_truth)
-
-    # If ground truth is a list
-    if any(char in ground_truth for char in [",", ";"]):
-        gt_elems = split_string(ground_truth)
-        ma_elems = split_string(model_answer)
-
-        # Length must match
-        if len(gt_elems) != len(ma_elems):
-            return False
-
-        # Compare each element as float or str
-        comparisons = []
-        for ma_elem, gt_elem in zip(ma_elems, gt_elems):
-            if is_float(gt_elem):
-                normalized_ma_elem = normalize_number_str(ma_elem)
-                comparisons.append(normalized_ma_elem == float(gt_elem))
-            else:
-                # Do not remove punctuation here, since comparisons can include it
-                comparisons.append(
-                    normalize_str(ma_elem, remove_punct=False)
-                    == normalize_str(gt_elem, remove_punct=False)
-                )
-        return all(comparisons)
-
-    # Otherwise treat ground truth as a plain string
-    return normalize_str(model_answer) == normalize_str(ground_truth)
 
 
 async def intercept_messages_for_tracing(stream, team_idx: int):
@@ -156,14 +79,6 @@ async def main() -> None:
     with open("prompt.txt", "rt") as fh:
         prompt = fh.read().strip()
     filename = "__FILE_NAME__".strip()
-
-    # Load expected answer if available so we can compute correctness
-    expected_answer: Optional[str] = None
-    try:
-        with open("expected_answer.txt", "rt") as fh:
-            expected_answer = fh.read().strip()
-    except FileNotFoundError:
-        expected_answer = None
 
     # Prepare step-level tracing file (shared schema with other templates)
     events_file_path = os.path.abspath("memory_events.jsonl")
@@ -235,12 +150,8 @@ If you are asked for a comma separated list, apply the above rules depending on 
 
     overall_runtime = time.time() - scenario_start_time
 
-    # Compute correctness using GAIA-style scoring, if we have a ground truth
     first_correct: Optional[bool] = None
     aggregated_correct: Optional[bool] = None
-    if expected_answer is not None and isinstance(final_answer, str):
-        first_correct = _gaia_question_scorer(final_answer, expected_answer)
-        aggregated_correct = first_correct  # single team, so first == aggregated
 
     # Persist comparison metrics for consistency with multi-team templates.
     comparison_metrics: Dict[str, Any] = {

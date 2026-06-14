@@ -9,12 +9,11 @@ import builtins
 import shutil
 import json
 import time
-import string
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from collections import deque
 from autogen_agentchat import TRACE_LOGGER_NAME as AGENTCHAT_TRACE_LOGGER_NAME, EVENT_LOGGER_NAME as AGENTCHAT_EVENT_LOGGER_NAME
-from autogen_core import TRACE_LOGGER_NAME as CORE_TRACE_LOGGER_NAME, EVENT_LOGGER_NAME as CORE_EVENT_LOGGER_NAME
+from autogen_core import EVENT_LOGGER_NAME as CORE_EVENT_LOGGER_NAME
 from autogen_ext.agents.magentic_one import MagenticOneCoderAgent
 from autogen_agentchat.teams import MagenticOneGroupChat
 from autogen_agentchat.ui import Console
@@ -26,15 +25,10 @@ from autogen_core.models import (
 )
 from autogen_core.logging import LLMCallEvent
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
-from autogen_agentchat.conditions import TextMentionTermination
-from autogen_core.models import ChatCompletionClient
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_ext.agents.file_surfer import FileSurfer
 from autogen_agentchat.agents import CodeExecutorAgent
 from autogen_agentchat.messages import (
-    TextMessage,
-    AgentEvent,
-    ChatMessage,
     HandoffMessage,
     MultiModalMessage,
     StopMessage,
@@ -44,7 +38,6 @@ from autogen_agentchat.messages import (
     ToolCallSummaryMessage,
 )
 from autogen_core import CancellationToken
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.models.openai._model_info import _MODEL_TOKEN_LIMITS, resolve_model
 from autogen_agentchat.utils import content_to_str
 
@@ -55,101 +48,6 @@ core_event_logger = logging.getLogger(CORE_EVENT_LOGGER_NAME)
 agentchat_event_logger = logging.getLogger(AGENTCHAT_EVENT_LOGGER_NAME)
 agentchat_trace_logger = logging.getLogger(AGENTCHAT_TRACE_LOGGER_NAME)
 
-
-def _gaia_question_scorer(model_answer: str, ground_truth: str) -> bool:
-    """GAIA-style answer normalization and equality check."""
-
-    def normalize_number_str(number_str: str) -> float:
-        # Replace common units and commas to allow conversion to float
-        for char in ["$", "%", ","]:
-            number_str = number_str.replace(char, "")
-        try:
-            return float(number_str)
-        except ValueError:
-            # String cannot be normalized to a number
-            return float("inf")
-
-    def split_string(s: str, char_list: List[str] = [",", ";"]) -> List[str]:
-        pattern = f"[{''.join(char_list)}]"
-        return re.split(pattern, s)
-
-    def normalize_str(input_str: str, remove_punct: bool = True) -> str:
-        """
-        Normalize a string by:
-        - Removing all white spaces
-        - Optionally removing punctuation
-        - Converting to lowercase
-        """
-        # Remove all white spaces
-        no_spaces = re.sub(r"\s", "", input_str)
-
-        # Remove punctuation, if specified.
-        if remove_punct:
-            translator = str.maketrans("", "", string.punctuation)
-            return no_spaces.lower().translate(translator)
-        else:
-            return no_spaces.lower()
-
-    def is_float(element: Any) -> bool:
-        try:
-            float(element)
-            return True
-        except ValueError:
-            return False
-
-    # If ground truth is a number
-    if is_float(ground_truth):
-        normalized_answer = normalize_number_str(model_answer)
-        return normalized_answer == float(ground_truth)
-
-    # If ground truth is a list
-    if any(char in ground_truth for char in [",", ";"]):
-        gt_elems = split_string(ground_truth)
-        ma_elems = split_string(model_answer)
-
-        # Length must match
-        if len(gt_elems) != len(ma_elems):
-            return False
-
-        # Compare each element as float or str
-        comparisons = []
-        for ma_elem, gt_elem in zip(ma_elems, gt_elems):
-            if is_float(gt_elem):
-                normalized_ma_elem = normalize_number_str(ma_elem)
-                comparisons.append(normalized_ma_elem == float(gt_elem))
-            else:
-                # Do not remove punctuation here, since comparisons can include it
-                comparisons.append(
-                    normalize_str(ma_elem, remove_punct=False)
-                    == normalize_str(gt_elem, remove_punct=False)
-                )
-        return all(comparisons)
-
-    # Otherwise treat ground truth as a plain string
-    return normalize_str(model_answer) == normalize_str(ground_truth)
-
-
-def _extract_final_answer_text(output: str) -> str:
-    """Extract the bare GAIA answer text from a model output.
-
-    The GAIA templates instruct models to respond with a line like:
-      FINAL ANSWER: 3
-    or, for the aggregator:
-      FINAL AGGREGATED ANSWER: 3
-
-    For scoring we must strip these prefixes and feed only the raw answer
-    string into the GAIA scorer, otherwise numeric normalization will fail.
-    """
-    # Try to match either FINAL ANSWER or FINAL AGGREGATED ANSWER, and then
-    # take the remainder of that line as the answer.
-    cleaned = re.sub(r"[*_`]", "", output)
-    m = re.search(r"FINAL (?:AGGREGATED )?ANSWER:\s*(.+)", cleaned)
-    if not m:
-        return cleaned.strip()
-
-    answer = m.group(1).strip().splitlines()[0].strip()
-    answer = re.sub(r"[.!?]+$", "", answer).strip()
-    return answer
 
 # Create a context variable to hold the current team's log file and the current team id.
 current_log_file = contextvars.ContextVar("current_log_file", default=None)
@@ -424,14 +322,6 @@ async def main(num_teams: int, num_answers: int) -> None:
         prompt = fh.read().strip()
     filename = "__FILE_NAME__".strip()
 
-    # Load expected answer if available so we can compute correctness metrics
-    expected_answer: Optional[str] = None
-    try:
-        with open("expected_answer.txt", "rt") as fh:
-            expected_answer = fh.read().strip()
-    except FileNotFoundError:
-        expected_answer = None
-
     # Prepare the prompt
     filename_prompt = ""
     if len(filename) > 0:
@@ -573,20 +463,8 @@ If you are asked for a comma separated list, apply the above rules depending on 
     # Compute overall runtime
     overall_runtime = time.time() - start_time
 
-    # Compute GAIA-style correctness for first-team and aggregated answers, if possible
     first_correct: Optional[bool] = None
     aggregated_correct: Optional[bool] = None
-    if expected_answer is not None:
-        if isinstance(first_team_answer, str):
-            first_correct = _gaia_question_scorer(
-                _extract_final_answer_text(first_team_answer),
-                expected_answer,
-            )
-        if isinstance(final_answer, str):
-            aggregated_correct = _gaia_question_scorer(
-                _extract_final_answer_text(final_answer),
-                expected_answer,
-            )
 
     # Persist comparison metrics for easy tabulation later.
     comparison_metrics: Dict[str, Any] = {

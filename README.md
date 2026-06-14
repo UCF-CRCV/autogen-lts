@@ -1,3 +1,27 @@
+## Learning to Share (LTS) — Fork
+
+> [!NOTE]
+> This is a fork of AutoGen containing the code for our **ICML 2026** paper,
+> **[Learning to Share: Selective Memory for Efficient Parallel Agentic Systems](https://joefioresi718.github.io/LTS_webpage/)**.
+> Changes are intentionally kept as close to upstream AutoGen as possible so the results remain reproducible.
+
+**What we add**
+
+- **Shared-memory team (`MagenticMemoryGroupChat`).** A parallel agentic team backed by a global memory bank that lets teams selectively reuse intermediate steps across parallel executions, reducing redundant computation. See `python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_memory/`.
+- **Learned memory/decision controller.** A lightweight controller decides whether each intermediate agent step is admitted to shared memory, trained with usage-aware reinforcement learning. The model and training code live under the agbench benchmarks (`decision_transformer.py`, `train_decision.py`).
+- **Benchmark templates + joint training.** AssistantBench and GAIA templates for the memory-free, shared-memory, and verified-memory variants, plus `joint_train.py`, which alternates trace generation (`agbench run`) with controller training (default: 5 epochs × 10 reuse iterations).
+
+If you use this code, please cite:
+
+```bibtex
+@inproceedings{fioresi2026learning,
+  title={Learning to Share: Selective Memory for Efficient Parallel Agentic Systems},
+  author={Fioresi, Joseph and Kulkarni, Parth Parag and Vayani, Ashmal and Wang, Song and Shah, Mubarak},
+  booktitle={Proceedings of the International Conference on Machine Learning (ICML)},
+  year={2026}
+}
+```
+
 <a name="readme-top"></a>
 
 <div align="center">
@@ -23,6 +47,7 @@
 > New users should start with [Microsoft Agent Framework](https://github.com/microsoft/agent-framework). Existing users are encouraged to migrate using the [AutoGen → Microsoft Agent Framework migration guide](https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-autogen/).
 >
 > Microsoft Agent Framework (MAF) is the enterprise‑ready successor to AutoGen. Microsoft Agent FrameworkAF in now available as a production-ready release: stable APIs, and a commitment to long-term support. Whether you're building a single assistant or orchestrating a fleet of specialized agents, Microsoft Agent Framework 1.0 gives you enterprise-grade multi-agent orchestration, multi-provider model support, and cross-runtime interoperability via A2A and MCP.
+
 
 ## Installation
 

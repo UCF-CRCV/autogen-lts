@@ -1,99 +1,16 @@
-import os
-import sys
-import re
-from agbench.tabulate_cmd import default_tabulate
 import json
+import os
+import re
+import sys
+
 import pandas as pd
-import string
+from agbench.tabulate_cmd import default_tabulate
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from assistantbench_evaluator import question_scorer
 
 EXCLUDE_DIR_NAMES = ["__pycache__"]
-
-
-def in_house_normalize_answer(a):
-    norm_answer = ", ".join(a.strip().lower().split(","))
-    norm_answer = re.sub(r"[\.\!\?]+$", "", re.sub(r"\s+", " ", norm_answer))
-    return norm_answer
-
-
-def in_house_question_scorer(
-    model_answer: str,
-    ground_truth: str,
-) -> bool:
-    n_ma = in_house_normalize_answer(model_answer)
-    n_gt = in_house_normalize_answer(ground_truth)
-    return n_gt != "" and n_gt == n_ma
-
-
-def _sanitize_numeric_token(raw: str) -> str:
-    """Strip decorations models often add so float() matches GAIA numeric ground truth."""
-    s = raw.strip()
-    m_box = re.search(r"\\boxed\{([^}]+)\}", s)
-    if m_box:
-        s = m_box.group(1).strip()
-    s = re.sub(r"^[\s~*_`]+|[\s*_`]+$", "", s)
-    for char in ["$", "%", ","]:
-        s = s.replace(char, "")
-    s = re.sub(r"\s*(?:m³|m\^3|m3)\s*$", "", s, flags=re.I)
-    try:
-        return str(float(s))
-    except ValueError:
-        m = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", s)
-        if m:
-            return m.group(0)
-        return s
-
-
-def gaia_question_scorer(
-    model_answer: str,
-    ground_truth: str,
-) -> bool:
-    def normalize_number_str(number_str: str) -> float:
-        cleaned = _sanitize_numeric_token(number_str)
-        try:
-            return float(cleaned)
-        except ValueError:
-            return float("inf")
-
-    def split_string(s: str, char_list: list[str] = [",", ";"]) -> list[str]:
-        pattern = f"[{''.join(char_list)}]"
-        return re.split(pattern, s)
-
-    def normalize_str(input_str, remove_punct=True) -> str:
-        no_spaces = re.sub(r"\s", "", input_str)
-        if remove_punct:
-            translator = str.maketrans("", "", string.punctuation)
-            return no_spaces.lower().translate(translator)
-        return no_spaces.lower()
-
-    def is_float(element: any) -> bool:
-        try:
-            float(element)
-            return True
-        except ValueError:
-            return False
-
-    if is_float(ground_truth):
-        normalized_answer = normalize_number_str(model_answer)
-        return normalized_answer == float(ground_truth)
-
-    if any(char in ground_truth for char in [",", ";"]):
-        gt_elems = split_string(ground_truth)
-        ma_elems = split_string(model_answer)
-        if len(gt_elems) != len(ma_elems):
-            return False
-        comparisons = []
-        for ma_elem, gt_elem in zip(ma_elems, gt_elems):
-            if is_float(gt_elem):
-                normalized_ma_elem = normalize_number_str(ma_elem)
-                comparisons.append(normalized_ma_elem == float(gt_elem))
-            else:
-                comparisons.append(
-                    normalize_str(ma_elem, remove_punct=False)
-                    == normalize_str(gt_elem, remove_punct=False)
-                )
-        return all(comparisons)
-
-    return normalize_str(model_answer) == normalize_str(ground_truth)
 
 
 def _extract_final_answer_text(output: str) -> str:
@@ -134,7 +51,11 @@ def _read_metrics(instance_dir: str) -> dict | None:
 
 
 def _score_answer_text(final_answer: str, expected_answer: str) -> bool:
-    return gaia_question_scorer(_extract_final_answer_text(final_answer), expected_answer)
+    prediction = _extract_final_answer_text(final_answer)
+    try:
+        return float(question_scorer(prediction, expected_answer)) == 1.0
+    except Exception:
+        return False
 
 
 def _score_from_metrics(
@@ -187,11 +108,30 @@ def _score_from_console(instance_dir: str) -> bool | None:
         return None
 
 
+def _score_aggregated_answer_text(instance_dir: str) -> bool | None:
+    data = _read_metrics(instance_dir)
+    if data is None:
+        return None
+    expected_answer = _safe_read_expected_answer(instance_dir)
+    if expected_answer is None:
+        return None
+    final_answer = (data.get("aggregated") or {}).get("final_answer")
+    if not isinstance(final_answer, str):
+        return None
+    return _score_answer_text(final_answer, expected_answer)
+
+
 def make_scorer(*, rescore: bool = False):
-    """Prefer aggregated metrics; fall back to console log extraction."""
+    """Prefer aggregated answer text scored with the AssistantBench evaluator."""
 
     def scorer(instance_dir: str) -> bool | None:
-        result = _score_from_metrics(instance_dir, rescore=rescore, use_first_team=False)
+        if rescore:
+            result = _score_from_metrics(instance_dir, rescore=True, use_first_team=False)
+            if result is not None:
+                return result
+            return _score_from_console(instance_dir)
+
+        result = _score_aggregated_answer_text(instance_dir)
         if result is not None:
             return result
         return _score_from_console(instance_dir)
@@ -230,18 +170,35 @@ def _resolve_runlogs(filtered_rest: list[str]) -> str | None:
     return None
 
 
+def _build_exclude_dir_names(runlogs: str | None) -> list[str]:
+    exclude_dir_names = list(EXCLUDE_DIR_NAMES)
+    if runlogs is None or not os.path.isdir(runlogs):
+        return exclude_dir_names
+
+    for task_id in os.listdir(runlogs):
+        if task_id in exclude_dir_names:
+            continue
+        task_path = os.path.join(runlogs, task_id)
+        if not os.path.isdir(task_path):
+            continue
+        has_trial = any(name.isdigit() for name in os.listdir(task_path))
+        if not has_trial:
+            exclude_dir_names.append(task_id)
+    return exclude_dir_names
+
+
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 _SCENARIO_DIR = os.path.realpath(os.path.join(_SCRIPT_DIR, os.path.pardir))
-_GAIA_REPO_DIR = os.path.join(_SCENARIO_DIR, "Downloads", "GAIA")
+_AB_REPO_DIR = os.path.join(_SCENARIO_DIR, "Downloads", "AssistantBench")
 
 
-def _load_task_id_to_level() -> dict[str, int]:
-    task_id_to_level: dict[str, int] = {}
-    for split in ("validation", "test"):
-        metadata_path = os.path.join(_GAIA_REPO_DIR, "2023", split, "metadata.jsonl")
-        if not os.path.isfile(metadata_path):
+def _load_task_id_to_difficulty() -> dict[str, str]:
+    task_id_to_difficulty: dict[str, str] = {}
+    for filename in ("assistant_bench_v1.0_dev.jsonl", "assistant_bench_v1.0_test.jsonl"):
+        data_path = os.path.join(_AB_REPO_DIR, filename)
+        if not os.path.isfile(data_path):
             continue
-        with open(metadata_path, "rt", encoding="utf-8") as fh:
+        with open(data_path, "rt", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -250,26 +207,24 @@ def _load_task_id_to_level() -> dict[str, int]:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                task_id = row.get("task_id")
-                level = row.get("Level")
-                if not isinstance(task_id, str) or not isinstance(level, int):
+                task_id = row.get("id")
+                difficulty = row.get("difficulty")
+                if not isinstance(task_id, str) or difficulty is None:
                     continue
-                if level not in (1, 2, 3):
-                    continue
-                task_id_to_level.setdefault(task_id, level)
-    return task_id_to_level
+                task_id_to_difficulty.setdefault(task_id, str(difficulty))
+    return task_id_to_difficulty
 
 
-def _tabulate_accuracy_by_level(runlogs: str, *, rescore: bool) -> None:
+def _tabulate_accuracy_by_difficulty(runlogs: str, *, rescore: bool) -> None:
     if not os.path.isdir(runlogs):
-        sys.stderr.write(f"\n[verbosity] '{runlogs}' is not a directory; skipping level breakdown.\n\n")
+        sys.stderr.write(f"\n[verbosity] '{runlogs}' is not a directory; skipping difficulty breakdown.\n\n")
         return
 
-    task_id_to_level = _load_task_id_to_level()
-    if not task_id_to_level:
+    task_id_to_difficulty = _load_task_id_to_difficulty()
+    if not task_id_to_difficulty:
         sys.stderr.write(
-            "\n[verbosity] Could not find GAIA metadata.jsonl under "
-            f"'{_GAIA_REPO_DIR}'. Run init_tasks.py first.\n\n"
+            "\n[verbosity] Could not find AssistantBench task files under "
+            f"'{_AB_REPO_DIR}'. Run init_tasks.py first.\n\n"
         )
         return
 
@@ -282,8 +237,8 @@ def _tabulate_accuracy_by_level(runlogs: str, *, rescore: bool) -> None:
         if task_id in EXCLUDE_DIR_NAMES:
             continue
 
-        level = task_id_to_level.get(task_id)
-        if level is None:
+        difficulty = task_id_to_difficulty.get(task_id)
+        if difficulty is None:
             continue
 
         task_path = os.path.join(runlogs, task_id)
@@ -297,17 +252,24 @@ def _tabulate_accuracy_by_level(runlogs: str, *, rescore: bool) -> None:
             result = score(instance_dir)
             if result is None:
                 continue
-            rows.append({"Level": level, "Trial": int(instance), "Correct": int(result), "Total": 1})
+            rows.append(
+                {
+                    "Difficulty": difficulty,
+                    "Trial": int(instance),
+                    "Correct": int(result),
+                    "Total": 1,
+                }
+            )
 
     if not rows:
         sys.stderr.write(f"\n[verbosity] No scorable instances found under '{runlogs}'.\n\n")
         return
 
-    df = pd.DataFrame(rows).groupby(["Level", "Trial"], as_index=False).sum(numeric_only=True)
+    df = pd.DataFrame(rows).groupby(["Difficulty", "Trial"], as_index=False).sum(numeric_only=True)
     df["Accuracy"] = df["Correct"] / df["Total"]
 
-    print("\nAccuracy by Level (aggregated answers)\n")
-    print(df.sort_values(["Level", "Trial"]).to_string(index=False))
+    print("\nAccuracy by Difficulty (aggregated answers)\n")
+    print(df.sort_values(["Difficulty", "Trial"]).to_string(index=False))
 
 
 def _tabulate_first_vs_aggregated(runlogs: str, *, rescore: bool) -> None:
@@ -338,12 +300,24 @@ def _tabulate_first_vs_aggregated(runlogs: str, *, rescore: bool) -> None:
             first = data.get("first_team", {}) or {}
             agg = data.get("aggregated", {}) or {}
 
-            first_correct = _score_from_metrics(
-                instance_dir, rescore=rescore, use_first_team=True
-            )
-            agg_correct = _score_from_metrics(
-                instance_dir, rescore=rescore, use_first_team=False
-            )
+            if rescore:
+                first_correct = _score_from_metrics(
+                    instance_dir, rescore=True, use_first_team=True
+                )
+                agg_correct = _score_from_metrics(
+                    instance_dir, rescore=True, use_first_team=False
+                )
+            else:
+                expected_answer = _safe_read_expected_answer(instance_dir)
+                first_correct = None
+                agg_correct = None
+                if expected_answer is not None:
+                    first_answer = first.get("final_answer")
+                    if isinstance(first_answer, str):
+                        first_correct = _score_answer_text(first_answer, expected_answer)
+                    agg_answer = agg.get("final_answer")
+                    if isinstance(agg_answer, str):
+                        agg_correct = _score_answer_text(agg_answer, expected_answer)
 
             rows.append(
                 {
@@ -385,13 +359,18 @@ def _tabulate_first_vs_aggregated(runlogs: str, *, rescore: bool) -> None:
 def main(args):
     invocation_cmd, *rest = args
     verbosity, rescore, filtered_rest = _parse_tabulate_options(rest)
+    runlogs = _resolve_runlogs(filtered_rest)
+    exclude_dir_names = _build_exclude_dir_names(runlogs)
 
-    default_tabulate([invocation_cmd] + filtered_rest, scorer=make_scorer(rescore=rescore))
+    default_tabulate(
+        [invocation_cmd] + filtered_rest,
+        scorer=make_scorer(rescore=rescore),
+        exclude_dir_names=exclude_dir_names,
+    )
 
     if verbosity == 0:
         return
 
-    runlogs = _resolve_runlogs(filtered_rest)
     if runlogs is None:
         sys.stderr.write(
             f"\n[verbosity] Could not determine runlogs directory from arguments: {filtered_rest}\n\n"
@@ -399,7 +378,7 @@ def main(args):
         return
 
     if verbosity >= 1:
-        _tabulate_accuracy_by_level(runlogs, rescore=rescore)
+        _tabulate_accuracy_by_difficulty(runlogs, rescore=rescore)
     if verbosity >= 2:
         _tabulate_first_vs_aggregated(runlogs, rescore=rescore)
 

@@ -713,6 +713,12 @@ class BaseOpenAIChatCompletionClient(ChatCompletionClient):
             completion_tokens=getattr(result.usage, "completion_tokens", 0) if result.usage is not None else 0,
         )
 
+        if usage.prompt_tokens is None or usage.completion_tokens is None:
+            usage = RequestUsage(
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
+
         logger.info(
             LLMCallEvent(
                 messages=cast(List[Dict[str, Any]], create_params.messages),
@@ -1013,7 +1019,7 @@ class BaseOpenAIChatCompletionClient(ChatCompletionClient):
         model = model.replace("gpt-35", "gpt-3.5")  # hack for Azure API
 
         # Because the usage chunk is not guaranteed to be the last chunk, we need to check if it is available.
-        if chunk and chunk.usage:
+        if chunk and chunk.usage and chunk.usage.prompt_tokens is not None and chunk.usage.completion_tokens is not None:
             prompt_tokens = chunk.usage.prompt_tokens
             completion_tokens = chunk.usage.completion_tokens
         else:

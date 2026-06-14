@@ -142,8 +142,8 @@ def default_tabulate(
     parsed_args = parser.parse_args(args)
     runlogs: str = parsed_args.runlogs
 
-    all_results: List[Dict[str, Any]] = list()
-    max_instances = 0
+    all_results: List[Dict[str, Any]] = []
+    max_instance: Optional[int] = None
 
     for task_id in sorted(
         os.listdir(runlogs),
@@ -167,17 +167,24 @@ def default_tabulate(
         )
         instances = [int(d) for d in instance_dirs if d.isdigit()]
 
+        if not instances:
+            continue
+
         for instance in instances:
             instance_dir = os.path.join(task_path, str(instance))
             results[f"Trial {instance} Success"] = scorer(instance_dir)
             results[f"Trial {instance} Time"] = timer(instance_dir)
 
-        max_instances = max(instances)
+        task_max_instance = max(instances)
+        max_instance = task_max_instance if max_instance is None else max(max_instance, task_max_instance)
 
-        # Buffer the results
         all_results.append(results)
 
-    num_instances = max_instances + 1
+    if not all_results or max_instance is None:
+        sys.stderr.write(f"No completed trials found under '{runlogs}'.\n")
+        sys.exit(1)
+
+    num_instances = max_instance + 1
 
     # Pad the results to max_instances
     for result in all_results:

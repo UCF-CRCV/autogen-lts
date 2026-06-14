@@ -18,10 +18,12 @@ class ModelFamily:
 
     This namespace class holds constants for the model families that AutoGen understands. Other families definitely exist and can be represented by a string, however, AutoGen will treat them as unknown."""
 
+    GPT_5_1 = "gpt-5.1"
     GPT_5 = "gpt-5"
     GPT_41 = "gpt-41"
     GPT_45 = "gpt-45"
     GPT_4O = "gpt-4o"
+    QWEN3 = "qwen3:32b"
     O1 = "o1"
     O3 = "o3"
     O4 = "o4"
@@ -54,6 +56,7 @@ class ModelFamily:
 
     ANY: TypeAlias = Literal[
         # openai_models
+        "gpt-5.1",
         "gpt-5",
         "gpt-41",
         "gpt-45",
@@ -90,6 +93,8 @@ class ModelFamily:
         "mistral",
         "ministral",
         "pixtral",
+        # qwen_models
+        "qwen3:32b",
         # unknown
         "unknown",
     ]
@@ -123,6 +128,7 @@ class ModelFamily:
     @staticmethod
     def is_openai(family: str) -> bool:
         return family in (
+            ModelFamily.GPT_5_1,
             ModelFamily.GPT_5,
             ModelFamily.GPT_45,
             ModelFamily.GPT_41,

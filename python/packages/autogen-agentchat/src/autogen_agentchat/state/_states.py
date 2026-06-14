@@ -72,6 +72,17 @@ class MagenticOneOrchestratorState(BaseGroupChatManagerState):
     type: str = Field(default="MagenticOneOrchestratorState")
 
 
+class MagenticMemoryOrchestratorState(BaseGroupChatManagerState):
+    """State for :class:`~autogen_agentchat.teams.MagenticMemoryGroupChat` orchestrator."""
+
+    task: str = Field(default="")
+    facts: str = Field(default="")
+    plan: str = Field(default="")
+    n_rounds: int = Field(default=0)
+    n_stalls: int = Field(default=0)
+    type: str = Field(default="MagenticMemoryOrchestratorState")
+
+
 class SocietyOfMindAgentState(BaseState):
     """State for a Society of Mind agent."""
 
