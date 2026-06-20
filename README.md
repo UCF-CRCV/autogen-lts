@@ -4,6 +4,7 @@
 > This is a fork of AutoGen containing the code for our **ICML 2026** paper,
 > **[Learning to Share: Selective Memory for Efficient Parallel Agentic Systems](https://joefioresi718.github.io/LTS_webpage/)**.
 > Changes are intentionally kept as close to upstream AutoGen as possible so the results remain reproducible.
+> HuggingFace model link: https://huggingface.co/jfioresi/lts-decision-transformer
 
 **What we add**
 
